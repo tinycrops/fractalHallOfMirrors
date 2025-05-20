@@ -40,7 +40,7 @@ The visualization contains four main panels:
 ## Running the Visualization
 
 ```
-python fractal.py
+python fractal_meta_bot.py
 ```
 
 The simulation will run for 30 ticks, showing the agent's learning progress in real-time. You'll see the visualization update as the agent encounters opponents and improves its strategies.
