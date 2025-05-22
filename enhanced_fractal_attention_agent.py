@@ -234,6 +234,7 @@ class EnhancedFractalAttentionAgent(FractalAttentionAgent):
         # Current goals
         self.current_super_goal = None
         self.current_meso_goal = None
+        self.current_tactical_objective = None  # Track current tactical objective for visualization
         
         # Replace standard Q-networks with enhanced networks that use spatial features
         # Initialize new Q-networks for the different levels
@@ -253,6 +254,9 @@ class EnhancedFractalAttentionAgent(FractalAttentionAgent):
         
         # Current state's spatial representation
         self.current_spatial_state = None
+        
+        # Event awareness
+        self.last_event_response = None
     
     def extract_attention_features(self, state):
         """
@@ -265,6 +269,7 @@ class EnhancedFractalAttentionAgent(FractalAttentionAgent):
         4. Harvester efficiency (number of harvesters carrying resources)
         5. Strategic phase (early/mid/late game indicator)
         6. Unit distribution (ratio of warriors to harvesters)
+        7. Event awareness (active events)
         """
         features = np.zeros(self.attention_feature_dim)
         
@@ -288,6 +293,10 @@ class EnhancedFractalAttentionAgent(FractalAttentionAgent):
                             (enemy.position[1] - nexus_pos[1])**2)**0.5
             if dist_to_nexus < 20:
                 enemy_threat += (20 - dist_to_nexus) / 20.0
+                
+                # Elite raiders are more threatening
+                if enemy.type == UnitType.ELITE_RAIDER:
+                    enemy_threat += 0.5
         
         features[3] = min(enemy_threat / 5.0, 1.0)  # Normalized enemy threat
         
@@ -327,8 +336,28 @@ class EnhancedFractalAttentionAgent(FractalAttentionAgent):
         vespene_count = state.get('vespene_count', 0)
         features[11] = min(vespene_count / 200.0, 1.0)  # Normalized vespene count
         
-        return features 
-    
+        # Enhanced event awareness
+        active_events = state.get('active_events', [])
+        if active_events:
+            # Check for attack waves
+            attack_wave_active = any(event.get('type') == 'EnemyAttackWave' for event in active_events)
+            if attack_wave_active:
+                # Boost combat-related features
+                features[3] += 0.3  # Increase enemy threat
+                features[4] += 0.3  # Increase combat intensity
+            
+            # Check for resource events
+            resource_depletion = any(event.get('type') == 'ResourceDepleted' for event in active_events)
+            resource_discovery = any(event.get('type') == 'NewResourceDiscovery' for event in active_events)
+            
+            if resource_depletion:
+                features[1] += 0.3  # Increase resource scarcity
+            
+            if resource_discovery:
+                features[10] += 0.2  # Boost exploration
+        
+        return features
+
     def compute_attention_weights(self, state):
         """
         Compute attention weights using the learned attention network.
@@ -397,6 +426,44 @@ class EnhancedFractalAttentionAgent(FractalAttentionAgent):
         
         return loss.item() 
     
+    def _process_event_information(self, state):
+        """Process event information from the state to influence decision making"""
+        active_events = state.get('active_events', [])
+        event_info = {
+            'attack_wave_active': False,
+            'resource_depletion_active': False,
+            'resource_discovery_active': False,
+            'opportunity_active': False,
+            'attack_location': None,
+            'resource_location': None,
+            'opportunity_location': None
+        }
+        
+        for event in active_events:
+            event_type = event.get('type', '')
+            
+            if event_type == 'EnemyAttackWave':
+                event_info['attack_wave_active'] = True
+                if 'location' in event:
+                    event_info['attack_location'] = event['location']
+            
+            elif event_type == 'ResourceDepleted':
+                event_info['resource_depletion_active'] = True
+            
+            elif event_type == 'NewResourceDiscovery':
+                event_info['resource_discovery_active'] = True
+                if 'location' in event:
+                    event_info['resource_location'] = event['location']
+            
+            elif event_type == 'SuddenOpportunity':
+                event_info['opportunity_active'] = True
+                if 'location' in event:
+                    event_info['opportunity_location'] = event['location']
+                if 'opportunity_type' in event:
+                    event_info['opportunity_type'] = event['opportunity_type']
+        
+        return event_info
+
     def generate_super_goal(self, state):
         """
         Generate explicit goals from the super level for the meso level.
@@ -405,12 +472,33 @@ class EnhancedFractalAttentionAgent(FractalAttentionAgent):
         # Extract features for super level
         super_features = extract_features(state, 'super')
         
+        # Process event information
+        event_info = self._process_event_information(state)
+        
         # Convert to tensor
         features_tensor = torch.FloatTensor(super_features)
         
         # Generate goal parameters
         with torch.no_grad():
             goal_params = self.super_goal_network(features_tensor).numpy()
+        
+        # Adjust goal parameters based on active events
+        if event_info['attack_wave_active']:
+            # Increase defense priority
+            goal_params[5] = min(goal_params[5] * 1.5, 1.0)
+            # Adjust unit ratio to favor warriors
+            goal_params[3] = min(goal_params[3] * 1.3, 1.0)  # Increase warrior ratio
+        
+        if event_info['resource_depletion_active']:
+            # Increase expansion priority
+            goal_params[4] = min(goal_params[4] * 1.3, 1.0)
+        
+        if event_info['resource_discovery_active']:
+            # Increase expansion priority
+            goal_params[4] = min(goal_params[4] * 1.2, 1.0)
+            # Adjust resource ratio based on discovery type
+            if event_info.get('resource_type') == 'VESPENE':
+                goal_params[1] = min(goal_params[1] * 1.3, 1.0)  # Favor vespene
         
         # Interpret goal parameters
         # 0-1: Desired resource ratio (crystal vs vespene)
@@ -423,14 +511,17 @@ class EnhancedFractalAttentionAgent(FractalAttentionAgent):
         self.current_super_goal = goal_params
         
         return goal_params
-    
+
     def generate_meso_goal(self, state, super_goal):
         """
         Generate explicit goals from the meso level for the micro level.
-        Takes into account the super-level goals.
+        Takes into account the super-level goals and active events.
         """
         # Extract features for meso level
         meso_features = extract_features(state, 'meso')
+        
+        # Process event information
+        event_info = self._process_event_information(state)
         
         # Combine with super goal
         combined_features = np.concatenate([meso_features, super_goal])
@@ -441,6 +532,34 @@ class EnhancedFractalAttentionAgent(FractalAttentionAgent):
         # Generate goal parameters
         with torch.no_grad():
             goal_params = self.meso_goal_network(features_tensor).numpy()
+        
+        # Adjust goal parameters based on active events
+        if event_info['attack_wave_active'] and event_info['attack_location']:
+            # Set rally point near the attack
+            attack_x, attack_y = event_info['attack_location']
+            # Normalized coordinates (0-1)
+            goal_params[0] = attack_x / MAP_SIZE  # Rally X
+            goal_params[1] = attack_y / MAP_SIZE  # Rally Y
+            # Increase warrior aggression
+            goal_params[7] = min(goal_params[7] * 1.5, 1.0)
+        
+        if event_info['resource_discovery_active'] and event_info['resource_location']:
+            # Set priority resource location to the new discovery
+            resource_x, resource_y = event_info['resource_location']
+            # Normalized coordinates (0-1)
+            goal_params[2] = resource_x / MAP_SIZE  # Resource X
+            goal_params[3] = resource_y / MAP_SIZE  # Resource Y
+        
+        if event_info['opportunity_active'] and event_info['opportunity_location']:
+            # Set exploration target to the opportunity
+            opp_x, opp_y = event_info['opportunity_location']
+            # Normalized coordinates (0-1)
+            goal_params[4] = opp_x / MAP_SIZE  # Exploration X
+            goal_params[5] = opp_y / MAP_SIZE  # Exploration Y
+            
+            # If it's an enemy weakness opportunity, increase warrior aggression
+            if event_info.get('opportunity_type') == 'enemy_weakness':
+                goal_params[7] = min(goal_params[7] * 1.3, 1.0)
         
         # Interpret goal parameters
         # 0-1: Rally point X, Y for warriors
@@ -455,7 +574,7 @@ class EnhancedFractalAttentionAgent(FractalAttentionAgent):
         self.current_meso_goal = goal_params
         
         return goal_params
-    
+
     def update_goal_networks(self):
         """
         Update the goal networks based on outcomes.
@@ -692,6 +811,21 @@ class EnhancedFractalAttentionAgent(FractalAttentionAgent):
         attn_weights = self.compute_attention_weights(state)
         attn_features = self.extract_attention_features(state)
         
+        # Process event information
+        event_info = self._process_event_information(state)
+        
+        # Adjust attention weights based on active events (emergency override)
+        # This provides an immediate response to critical events
+        if event_info['attack_wave_active']:
+            # Shift attention toward micro/meso for combat
+            # Weight adjustments (mild to avoid overriding learning)
+            attn_weights[0] = attn_weights[0] * 1.2  # Boost micro attention
+            attn_weights[1] = attn_weights[1] * 1.1  # Slightly boost meso attention
+            attn_weights[2] = attn_weights[2] * 0.8  # Reduce super attention
+            
+            # Renormalize
+            attn_weights = attn_weights / np.sum(attn_weights)
+        
         # Calculate reward for previous attention allocation
         if prev_state is not None:
             attn_reward = self._calculate_attention_reward(state, prev_state)
@@ -707,6 +841,15 @@ class EnhancedFractalAttentionAgent(FractalAttentionAgent):
         super_action = self.choose_action(state, level='super')
         prev_focus = self.current_focus
         self.current_focus = list(StrategicFocus)[super_action]
+        
+        # Override strategic focus based on critical events if needed
+        if event_info['attack_wave_active'] and self.current_focus != StrategicFocus.DEFENSE:
+            # Record original focus for learning
+            original_focus = self.current_focus
+            
+            # Override with DEFENSE
+            self.current_focus = StrategicFocus.DEFENSE
+            print(f"Strategic focus overridden by attack event: {original_focus.name} -> {self.current_focus.name}")
         
         # Generate explicit super-to-meso goals
         super_goal = self.generate_super_goal(state)
@@ -770,6 +913,7 @@ class EnhancedFractalAttentionAgent(FractalAttentionAgent):
         # Meso-level decisions (tactical objectives)
         meso_action = self.choose_action(state, level='meso')
         tactical_objective = list(TacticalObjective)[meso_action]
+        self.current_tactical_objective = tactical_objective  # Set current tactical objective for visualization
         
         # Generate explicit meso-to-micro goals, influenced by super goals
         meso_goal = self.generate_meso_goal(state, super_goal)
