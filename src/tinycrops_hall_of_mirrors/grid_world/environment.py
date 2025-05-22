@@ -16,23 +16,30 @@ class GridEnvironment:
     - Manhattan distance-based rewards
     """
     
-    def __init__(self, size=20, seed=0):
+    def __init__(self, size=20, obstacles=None, start=None, goal=None, seed=0):
         """
         Initialize the grid environment.
         
         Args:
             size: Grid size (size x size)
+            obstacles: List/set of obstacle positions (x, y). If None, creates default obstacles.
+            start: Starting position (x, y). Default is (0, 0).
+            goal: Goal position (x, y). Default is (size-1, size-1).
             seed: Random seed for reproducibility
         """
         self.size = size
-        self.goal = (size - 1, size - 1)
+        self.start = start if start is not None else (0, 0)
+        self.goal = goal if goal is not None else (size - 1, size - 1)
         self.actions = {0: (-1, 0), 1: (1, 0), 2: (0, -1), 3: (0, 1)}  # up, down, left, right
         
         # Set random seed
         np.random.seed(seed)
         
         # Create obstacles
-        self.obstacles = self._create_obstacles()
+        if obstacles is not None:
+            self.obstacles = set(obstacles)
+        else:
+            self.obstacles = self._create_obstacles()
         
     def _create_obstacles(self):
         """Create a set of obstacle positions."""
@@ -54,9 +61,8 @@ class GridEnvironment:
             obstacles.remove(self.goal)
         
         # Make sure the start is accessible
-        start = (0, 0)
-        if start in obstacles:
-            obstacles.remove(start)
+        if self.start in obstacles:
+            obstacles.remove(self.start)
         
         return obstacles
     
@@ -88,7 +94,7 @@ class GridEnvironment:
     
     def reset(self):
         """Reset the environment to the starting position."""
-        return (0, 0)
+        return self.start
     
     def is_valid_position(self, pos):
         """Check if a position is valid (within bounds and not an obstacle)."""

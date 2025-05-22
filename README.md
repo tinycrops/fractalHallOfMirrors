@@ -292,6 +292,115 @@ pip install -r requirements.txt  # When available
 - Detailed usage examples and tutorials
 - Clear migration paths from legacy code
 
+## 🎯 Enhanced Visualization Features (NEW!)
+
+The Fractal Hall of Mirrors project now includes advanced frame-by-frame visualization capabilities that provide deep insights into agent behavior and decision-making processes.
+
+### Key Visualization Features
+
+#### 1. **Dynamic Q-Value/Policy Overlays**
+- Real-time display of policy arrows showing best actions from each state
+- Dynamic Q-value heatmaps that update as the agent moves
+- Confidence visualization based on Q-value magnitudes
+
+#### 2. **Hierarchical Goal Visualization**
+- Live display of super-goals and macro-goals for fractal agents
+- Visual indication of current hierarchical block boundaries
+- Color-coded hierarchical level indicators
+
+#### 3. **Live Attention Mechanism Display**
+- Real-time attention weight visualization for attention-based agents
+- Multi-head attention breakdown with individual head weights
+- Attention head activation timeline and evolution
+
+#### 4. **Curiosity-Driven Exploration Visualization**
+- Visit count heatmaps showing exploration patterns
+- Novelty bonus overlays highlighting unexplored areas
+- Intrinsic reward visualization for curiosity-driven agents
+
+#### 5. **Adaptive Hierarchy Analysis**
+- Visualization of hierarchy changes over time
+- Performance correlation with block size adaptations
+- Adaptation trigger point identification
+
+#### 6. **Meta-Learning Strategy Insights**
+- Strategy selection visualization over episodes
+- Environment fingerprint clustering analysis
+- Strategy performance distribution comparisons
+
+#### 7. **Optimal Path Comparison**
+- A* computed optimal path overlay
+- Agent path vs optimal path comparison
+- Performance gap visualization
+
+### Usage Examples
+
+```python
+# Basic enhanced animation with policy overlay
+from tinycrops_hall_of_mirrors.grid_world.visualization import animate_agent_step_by_step
+
+animate_agent_step_by_step(
+    agent, env,
+    title="Agent Decision Analysis",
+    show_policy=True,           # Show policy arrows
+    show_values=True,           # Show Q-value heatmap
+    show_hierarchical=True,     # Show hierarchical goals
+    show_attention=True,        # Show attention weights
+    show_curiosity=True,        # Show exploration heatmap
+    show_optimal_path=True,     # Show A* optimal path
+    interval=1000               # Frame interval in ms
+)
+
+# Specialized analysis for different agent types
+visualize_adaptive_hierarchy(adaptive_agent, env)
+visualize_meta_learning_strategies(meta_agent, env)
+visualize_multihead_attention_analysis(multihead_agent, env, episode_data)
+```
+
+### Agent-Specific Features
+
+#### **FlatAgent**
+- Policy arrow visualization
+- Q-value confidence display
+- Optimal path comparison
+
+#### **FractalAgent** 
+- Hierarchical goal markers (super, macro levels)
+- Multi-level Q-value heatmaps
+- Block boundary visualization
+
+#### **FractalAttentionAgent**
+- Live attention weight bars
+- Attention-weighted decision visualization
+- Attention evolution timeline
+
+#### **Advanced Agents (Novel Contributions)**
+- **AdaptiveFractalAgent**: Dynamic hierarchy adaptation visualization
+- **CuriosityDrivenAgent**: Exploration heatmaps and novelty bonuses
+- **MultiHeadAttentionAgent**: Multi-head attention breakdown
+- **MetaLearningAgent**: Strategy selection and environment analysis
+- **CuriosityDrivenAdaptiveAgent**: Combined curiosity and adaptation visualization
+
+### Testing and Demonstration
+
+Run the comprehensive test suite to see all visualization features:
+
+```bash
+python test_enhanced_visualizations.py
+```
+
+This demonstrates:
+- 8 different agent types with specialized visualizations
+- Frame-by-frame decision analysis
+- Interactive features and data logging
+- Performance comparison tools
+
+The enhanced visualization system is ready for:
+- **Research Analysis**: Deep dive into agent behavior patterns
+- **Debugging**: Visual identification of learning issues
+- **Performance Demonstration**: Clear comparison of agent capabilities
+- **Educational Presentations**: Intuitive understanding of RL concepts
+
 ---
 
 **Status**: ✅ **Production Ready** - Advanced research platform with novel RL innovations, comprehensive testing, and documented performance improvements.

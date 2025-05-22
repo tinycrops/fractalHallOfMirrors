@@ -665,4 +665,208 @@ class MetaLearningAgent(FractalAttentionAgent):
         
         print(f"  Strategy performance: {avg_performance:.1f} steps (library size: {len(self.strategy_library)})")
         
-        return log, training_time 
+        return log, training_time
+
+
+class CuriosityDrivenAdaptiveAgent(AdaptiveFractalAgent):
+    """
+    Advanced agent combining curiosity-driven exploration with adaptive hierarchy.
+    
+    Novel Innovation: Combines intrinsic motivation through curiosity with
+    dynamic hierarchical structure adaptation for maximum exploration efficiency.
+    """
+    
+    def __init__(self, env, curiosity_weight=0.1, prediction_lr=0.01, 
+                 novelty_threshold=0.8, **kwargs):
+        super().__init__(env, **kwargs)
+        
+        self.curiosity_weight = curiosity_weight
+        self.prediction_lr = prediction_lr
+        self.novelty_threshold = novelty_threshold
+        
+        # Curiosity components
+        self.visit_counts = np.zeros(self.env.state_space_size)
+        self.prediction_errors = []
+        self.novelty_map = np.zeros((env.size, env.size))
+        
+        # Adaptive components from parent class are inherited
+        # Initialize hierarchy tracking
+        self.hierarchy_history = []
+        
+    def get_novelty_bonus(self, state_idx):
+        """Compute novelty bonus for curiosity-driven exploration."""
+        visit_count = self.visit_counts[state_idx]
+        novelty = 1.0 / np.sqrt(visit_count + 1)
+        return self.curiosity_weight * novelty
+        
+    def compute_intrinsic_reward(self, state, action, next_state):
+        """
+        Compute intrinsic reward combining curiosity and prediction error.
+        """
+        state_idx = self.get_state_index(state)
+        next_state_idx = self.get_state_index(next_state)
+        
+        # Novelty bonus
+        novelty_bonus = self.get_novelty_bonus(state_idx)
+        
+        # Prediction error (simplified)
+        predicted_next = self._predict_next_state(state, action)
+        prediction_error = abs(predicted_next - next_state_idx) / self.env.state_space_size
+        
+        # Update prediction model (simple running average)
+        self.prediction_errors.append(prediction_error)
+        if len(self.prediction_errors) > 1000:
+            self.prediction_errors.pop(0)
+            
+        # Update novelty map
+        x, y = state
+        self.novelty_map[x, y] = novelty_bonus
+        
+        return novelty_bonus + prediction_error * 0.5
+        
+    def _predict_next_state(self, state, action):
+        """Simple state prediction for intrinsic motivation."""
+        # Simplified prediction - could use neural network
+        action_delta = list(self.env.actions.values())[action]
+        predicted_pos = (state[0] + action_delta[0], state[1] + action_delta[1])
+        
+        # Bound to environment
+        predicted_pos = (
+            max(0, min(self.env.size - 1, predicted_pos[0])),
+            max(0, min(self.env.size - 1, predicted_pos[1]))
+        )
+        
+        return self.get_state_index(predicted_pos)
+        
+    def update_micro_q_table(self):
+        """Enhanced micro Q-table update with curiosity bonuses."""
+        super().update_micro_q_table()
+        
+        # Additional curiosity-based updates
+        if hasattr(self, 'micro_buffer') and self.micro_buffer:
+            for s, a, r, s2, done in self.micro_buffer[-10:]:  # Last 10 transitions
+                # Add intrinsic reward
+                pos = self.get_position_from_state_index(s)
+                next_pos = self.get_position_from_state_index(s2)
+                intrinsic_r = self.compute_intrinsic_reward(pos, a, next_pos)
+                
+                # Update with combined reward
+                total_reward = r + intrinsic_r
+                old_q = self.Q_micro[s, a]
+                max_next_q = np.max(self.Q_micro[s2, :])
+                self.Q_micro[s, a] = old_q + self.alpha * (total_reward + self.gamma * max_next_q - old_q)
+                
+    def get_position_from_state_index(self, state_idx):
+        """Convert state index back to position."""
+        return (state_idx // self.env.size, state_idx % self.env.size)
+        
+    def adapt_hierarchy_with_curiosity(self):
+        """
+        Adapt hierarchy based on both performance and exploration efficiency.
+        """
+        # Get base adaptation from parent
+        self.adapt_hierarchy()
+        
+        # Additional curiosity-based adaptation
+        if len(self.performance_history) > 20:
+            recent_performance = list(self.performance_history)[-10:]
+            older_performance = list(self.performance_history)[-20:-10]
+            
+            # Check exploration efficiency
+            recent_novelty = np.mean([np.max(self.novelty_map) for _ in recent_performance])
+            
+            # If we're not exploring well, try smaller blocks for more granular control
+            if recent_novelty < self.novelty_threshold:
+                if self.block_micro > self.min_block_size:
+                    self.block_micro = max(self.min_block_size, self.block_micro - 1)
+                    self.hierarchy_history.append({
+                        'episode': len(self.performance_history),
+                        'block_micro': self.block_micro,
+                        'block_macro': self.block_macro,
+                        'trigger': 'low_exploration',
+                        'performance': recent_performance[-1]
+                    })
+                    print(f"    Adapted hierarchy for exploration: micro={self.block_micro}")
+                    self._rebuild_q_tables()
+                    
+    def train(self, episodes=600, horizon=500):
+        """Train with both curiosity and adaptive hierarchy."""
+        start_time = time.time()
+        log = []
+        epsilon = self.epsilon_start  # Initialize epsilon
+        
+        print(f"Training CuriosityDrivenAdaptiveAgent with curiosity_weight={self.curiosity_weight}")
+        print(f"Initial hierarchy: micro={self.block_micro}, macro={self.block_macro}")
+        
+        for episode in range(episodes):
+            pos = self.env.start
+            step = 0
+            
+            while pos != self.env.goal and step < horizon:
+                # Update visit counts for curiosity
+                state_idx = self.get_state_index(pos)
+                self.visit_counts[state_idx] += 1
+                
+                # Enhanced epsilon-greedy with curiosity bonuses
+                if np.random.random() < epsilon:
+                    action = np.random.choice(len(self.env.actions))
+                else:
+                    # Combine Q-values with curiosity bonuses
+                    base_q_values = self.Q_micro[state_idx]
+                    curiosity_bonuses = np.array([
+                        self.get_novelty_bonus(self.get_state_index(self.env.step(pos, a)[0]))
+                        for a in range(len(self.env.actions))
+                    ])
+                    combined_values = base_q_values + curiosity_bonuses * 0.5
+                    action = np.argmax(combined_values)
+                
+                next_pos, _, _ = self.env.step(pos, action)
+                
+                # Compute rewards
+                reward = 100 if next_pos == self.env.goal else -1
+                intrinsic_reward = self.compute_intrinsic_reward(pos, action, next_pos)
+                total_reward = reward + intrinsic_reward
+                
+                # Store transitions (similar to parent class)
+                done = (next_pos == self.env.goal)
+                
+                # Update Q-tables with curiosity
+                state_idx = self.get_state_index(pos)
+                next_state_idx = self.get_state_index(next_pos)
+                
+                old_q = self.Q_micro[state_idx, action]
+                max_next_q = np.max(self.Q_micro[next_state_idx])
+                self.Q_micro[state_idx, action] = old_q + self.alpha * (
+                    total_reward + self.gamma * max_next_q - old_q
+                )
+                
+                pos = next_pos
+                step += 1
+                
+                if done:
+                    break
+                    
+            log.append(step)
+            self.performance_history.append(step)
+            
+            # Adapt hierarchy with curiosity considerations
+            if episode > 50 and episode % 25 == 0:
+                self.adapt_hierarchy_with_curiosity()
+                
+            # Decay epsilon
+            epsilon = max(self.epsilon_end, epsilon * self.epsilon_decay)
+            
+            if episode % 100 == 0:
+                avg_performance = np.mean(log[-20:])
+                avg_novelty = np.mean(self.novelty_map[self.novelty_map > 0])
+                print(f"  Episode {episode}: avg_steps={avg_performance:.1f}, "
+                      f"exploration_rate={avg_novelty:.3f}, "
+                      f"hierarchy=({self.block_micro},{self.block_macro})")
+                      
+        training_time = time.time() - start_time
+        
+        print(f"Training completed in {training_time:.2f}s")
+        print(f"Final hierarchy: micro={self.block_micro}, macro={self.block_macro}")
+        print(f"Total hierarchy adaptations: {len(self.hierarchy_history)}")
+        
+        return log 

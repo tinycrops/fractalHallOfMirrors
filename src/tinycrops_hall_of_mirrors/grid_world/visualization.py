@@ -477,3 +477,576 @@ def compare_agents_summary(logs, labels, training_times=None):
         print(row)
     
     print("\n" + "="*70) 
+
+
+def animate_agent_step_by_step(agent, env, title="Agent Path with Decision Analysis", 
+                              save_path=None, show_policy=True, show_values=False,
+                              show_hierarchical=True, show_attention=False,
+                              show_curiosity=False, show_optimal_path=False,
+                              interval=500):
+    """
+    Create an enhanced animated visualization showing agent's decision-making process.
+    
+    Args:
+        agent: Trained agent
+        env: Grid environment
+        title: Animation title
+        save_path: Path to save animation (optional)
+        show_policy: Show policy arrows at each state
+        show_values: Show state values as heatmap
+        show_hierarchical: Show hierarchical goals for fractal agents
+        show_attention: Show attention weights for attention agents
+        show_curiosity: Show curiosity/novelty bonus for curiosity agents
+        show_optimal_path: Show optimal path computed by A*
+        interval: Animation frame interval in ms
+    """
+    # Get the agent's path
+    path = []
+    hierarchical_goals = []
+    attention_weights = []
+    curiosity_values = []
+    
+    # Run episode and collect data
+    pos = env.start
+    step = 0
+    
+    while pos != env.goal and step < 200:
+        path.append(pos)
+        
+        # Collect hierarchical goals if applicable
+        if hasattr(agent, 'idx_super') and hasattr(agent, 'idx_macro'):
+            super_goal = agent.idx_super(pos)
+            macro_goal = agent.idx_macro(pos)
+            hierarchical_goals.append((super_goal, macro_goal))
+        
+        # Collect attention weights if applicable  
+        if hasattr(agent, 'attention_weights'):
+            attention_weights.append(agent.attention_weights.copy())
+            
+        # Collect curiosity values if applicable
+        if hasattr(agent, 'get_novelty_bonus'):
+            state_idx = agent.get_state_index(pos)
+            curiosity = agent.get_novelty_bonus(state_idx)
+            curiosity_values.append(curiosity)
+        
+        # Get action
+        state_idx = agent.get_state_index(pos)
+        action = agent.choose_action(state_idx, epsilon=0.05)
+        
+        # Take action
+        next_pos, _, done = env.step(pos, action)
+        pos = next_pos
+        step += 1
+    
+    path.append(pos)  # Add final position
+    
+    # Compute optimal path if requested
+    optimal_path = None
+    if show_optimal_path:
+        optimal_path = compute_optimal_path(env)
+    
+    # Prepare figure
+    if show_hierarchical and hasattr(agent, 'Q_super'):
+        fig = plt.figure(figsize=(20, 12))
+        gs = gridspec.GridSpec(2, 3, height_ratios=[3, 1])
+        
+        ax_main = fig.add_subplot(gs[0, :2])
+        ax_info = fig.add_subplot(gs[0, 2])
+        ax_attention = fig.add_subplot(gs[1, 0]) if show_attention else None
+        ax_levels = fig.add_subplot(gs[1, 1])
+        ax_curiosity = fig.add_subplot(gs[1, 2]) if show_curiosity else None
+    else:
+        fig = plt.figure(figsize=(15, 10))
+        gs = gridspec.GridSpec(2, 2, height_ratios=[3, 1])
+        
+        ax_main = fig.add_subplot(gs[0, :])
+        ax_info = fig.add_subplot(gs[1, 0])
+        ax_attention = None  # No attention panel in simple layout
+        ax_levels = None     # No levels panel in simple layout
+        ax_curiosity = fig.add_subplot(gs[1, 1]) if show_curiosity else None
+    
+    # Initialize main display
+    ax_main.set_title(title, fontsize=16)
+    ax_main.set_xlim(-0.5, env.size - 0.5)
+    ax_main.set_ylim(-0.5, env.size - 0.5)
+    ax_main.set_aspect('equal')
+    ax_main.grid(True, alpha=0.3)
+    
+    # Create base map
+    base_map = np.zeros((env.size, env.size, 3))
+    
+    # Mark obstacles
+    for obs in env.obstacles:
+        base_map[obs[0], obs[1]] = [0.3, 0.3, 0.3]
+    
+    # Mark goal
+    base_map[env.goal[0], env.goal[1]] = [1.0, 0.65, 0.0]
+    
+    # Show optimal path if requested
+    if optimal_path:
+        for pos in optimal_path[1:-1]:  # Exclude start and goal
+            base_map[pos[0], pos[1]] = [0.8, 0.8, 1.0]
+    
+    im_main = ax_main.imshow(base_map, interpolation='nearest')
+    
+    # Initialize policy arrows
+    policy_arrows = []
+    if show_policy:
+        for x in range(env.size):
+            for y in range(env.size):
+                if (x, y) not in env.obstacles and (x, y) != env.goal:
+                    arrow = ax_main.arrow(y, x, 0, 0, head_width=0.2, 
+                                        head_length=0.1, fc='blue', ec='blue', 
+                                        alpha=0.5)
+                    policy_arrows.append(((x, y), arrow))
+    
+    # Initialize value heatmap
+    value_overlay = None
+    if show_values:
+        value_data = np.zeros((env.size, env.size))
+        value_overlay = ax_main.imshow(value_data, cmap='YlOrRd', alpha=0.5, 
+                                     interpolation='nearest')
+    
+    # Initialize hierarchical goal markers
+    super_goal_marker = None
+    macro_goal_marker = None
+    if show_hierarchical and hierarchical_goals:
+        super_goal_marker = ax_main.plot([], [], 'bs', markersize=20, 
+                                       alpha=0.5, label='Super Goal')[0]
+        macro_goal_marker = ax_main.plot([], [], 'gs', markersize=15, 
+                                       alpha=0.5, label='Macro Goal')[0]
+    
+    # Initialize agent marker
+    agent_marker = ax_main.plot([], [], 'ro', markersize=12, label='Agent')[0]
+    
+    # Initialize path trail
+    path_line = ax_main.plot([], [], 'r-', linewidth=2, alpha=0.7)[0]
+    
+    # Info panel setup
+    ax_info.axis('off')
+    info_text = ax_info.text(0.05, 0.95, '', transform=ax_info.transAxes, 
+                           fontsize=12, verticalalignment='top', 
+                           fontfamily='monospace')
+    
+    # Attention panel setup
+    attention_bars = []
+    if ax_attention is not None and hasattr(agent, 'attention_weights'):
+        ax_attention.set_title('Attention Weights')
+        ax_attention.set_ylim(0, 1)
+        ax_attention.set_xticks([0, 1, 2])
+        ax_attention.set_xticklabels(['Micro', 'Macro', 'Super'])
+        attention_bars = ax_attention.bar([0, 1, 2], [0, 0, 0], 
+                                        color=['red', 'green', 'blue'])
+    
+    # Hierarchical levels panel
+    if ax_levels is not None and hasattr(agent, 'block_micro'):
+        ax_levels.set_title('Hierarchical Block Sizes')
+        ax_levels.axis('off')
+        levels_text = ax_levels.text(0.1, 0.5, 
+                                   f'Micro Block: {agent.block_micro}x{agent.block_micro}\n'
+                                   f'Macro Block: {agent.block_macro}x{agent.block_macro}',
+                                   transform=ax_levels.transAxes, fontsize=12)
+    
+    # Curiosity panel setup
+    if ax_curiosity is not None and hasattr(agent, 'visit_counts'):
+        ax_curiosity.set_title('Curiosity/Visit Heatmap')
+        visit_data = np.zeros((env.size, env.size))
+        for x in range(env.size):
+            for y in range(env.size):
+                state_idx = agent.get_state_index((x, y))
+                if state_idx < len(agent.visit_counts):
+                    visit_data[x, y] = agent.visit_counts[state_idx]
+        
+        curiosity_heatmap = ax_curiosity.imshow(visit_data, cmap='viridis', 
+                                               interpolation='nearest')
+        plt.colorbar(curiosity_heatmap, ax=ax_curiosity)
+    
+    def animate(frame):
+        if frame >= len(path):
+            return []
+        
+        current_pos = path[frame]
+        
+        # Update agent position
+        agent_marker.set_data([current_pos[1]], [current_pos[0]])
+        
+        # Update path trail
+        if frame > 0:
+            path_y = [p[1] for p in path[:frame+1]]
+            path_x = [p[0] for p in path[:frame+1]]
+            path_line.set_data(path_y, path_x)
+        
+        # Update policy arrows
+        if show_policy:
+            for (x, y), arrow in policy_arrows:
+                state_idx = agent.get_state_index((x, y))
+                q_values = agent.Q[state_idx] if hasattr(agent, 'Q') else agent.Q_micro[state_idx]
+                best_action = np.argmax(q_values)
+                
+                # Get action direction
+                action_delta = list(env.actions.values())[best_action]
+                arrow.set_data(dx=action_delta[1]*0.3, dy=action_delta[0]*0.3)
+                
+                # Color based on Q-value confidence
+                max_q = q_values[best_action]
+                arrow.set_alpha(min(1.0, max(0.1, (max_q + 10) / 20)))
+        
+        # Update value heatmap
+        if show_values and value_overlay:
+            value_data = np.zeros((env.size, env.size))
+            for x in range(env.size):
+                for y in range(env.size):
+                    if (x, y) not in env.obstacles:
+                        state_idx = agent.get_state_index((x, y))
+                        q_values = agent.Q[state_idx] if hasattr(agent, 'Q') else agent.Q_micro[state_idx]
+                        value_data[x, y] = np.max(q_values)
+            
+            value_overlay.set_data(value_data)
+            value_overlay.set_clim(vmin=value_data.min(), vmax=value_data.max())
+        
+        # Update hierarchical goals
+        if show_hierarchical and frame < len(hierarchical_goals):
+            super_idx, macro_idx = hierarchical_goals[frame]
+            
+            if hasattr(agent, 'block_macro'):
+                # Convert super index to position
+                super_size = env.size // agent.block_macro
+                super_y = super_idx % super_size
+                super_x = super_idx // super_size
+                super_center_y = super_y * agent.block_macro + agent.block_macro // 2
+                super_center_x = super_x * agent.block_macro + agent.block_macro // 2
+                super_goal_marker.set_data([super_center_y], [super_center_x])
+            
+            if hasattr(agent, 'block_micro'):
+                # Convert macro index to position
+                macro_size = env.size // agent.block_micro
+                macro_y = macro_idx % macro_size
+                macro_x = macro_idx // macro_size
+                macro_center_y = macro_y * agent.block_micro + agent.block_micro // 2
+                macro_center_x = macro_x * agent.block_micro + agent.block_micro // 2
+                macro_goal_marker.set_data([macro_center_y], [macro_center_x])
+        
+        # Update attention weights
+        if ax_attention is not None and frame < len(attention_weights):
+            weights = attention_weights[frame]
+            for i, bar in enumerate(attention_bars):
+                bar.set_height(weights[i])
+        
+        # Update info panel
+        info_lines = [
+            f"Step: {frame}/{len(path)-1}",
+            f"Position: {current_pos}",
+            f"Distance to Goal: {abs(current_pos[0]-env.goal[0]) + abs(current_pos[1]-env.goal[1])}"
+        ]
+        
+        if hasattr(agent, 'Q'):
+            state_idx = agent.get_state_index(current_pos)
+            q_values = agent.Q[state_idx] if hasattr(agent, 'Q') else agent.Q_micro[state_idx]
+            best_action = np.argmax(q_values)
+            info_lines.extend([
+                f"Best Action: {list(env.actions.keys())[best_action]}",
+                f"Q-value: {q_values[best_action]:.3f}"
+            ])
+        
+        if frame < len(curiosity_values):
+            info_lines.append(f"Curiosity Bonus: {curiosity_values[frame]:.3f}")
+        
+        info_text.set_text('\n'.join(info_lines))
+        
+        return [agent_marker, path_line, info_text] + \
+               ([super_goal_marker, macro_goal_marker] if show_hierarchical and hierarchical_goals else []) + \
+               (list(attention_bars) if ax_attention is not None and attention_weights else [])
+    
+    ani = animation.FuncAnimation(fig, animate, frames=len(path)+10, 
+                                interval=interval, blit=False, repeat=True)
+    
+    plt.tight_layout()
+    
+    if save_path:
+        ani.save(save_path, writer='pillow', fps=1000//interval)
+    
+    plt.show()
+    return ani
+
+
+def compute_optimal_path(env):
+    """
+    Compute optimal path using A* algorithm.
+    
+    Args:
+        env: Grid environment
+        
+    Returns:
+        List of positions representing optimal path
+    """
+    from heapq import heappush, heappop
+    
+    def heuristic(pos):
+        return abs(pos[0] - env.goal[0]) + abs(pos[1] - env.goal[1])
+    
+    start = env.start
+    goal = env.goal
+    
+    # Priority queue: (f_score, g_score, position, path)
+    pq = [(heuristic(start), 0, start, [start])]
+    visited = set()
+    
+    while pq:
+        f_score, g_score, current, path = heappop(pq)
+        
+        if current == goal:
+            return path
+        
+        if current in visited:
+            continue
+            
+        visited.add(current)
+        
+        # Check all neighbors
+        for action_delta in env.actions.values():
+            next_pos = (current[0] + action_delta[0], current[1] + action_delta[1])
+            
+            # Check if valid position
+            if (0 <= next_pos[0] < env.size and 
+                0 <= next_pos[1] < env.size and
+                next_pos not in env.obstacles and
+                next_pos not in visited):
+                
+                new_g_score = g_score + 1
+                new_f_score = new_g_score + heuristic(next_pos)
+                heappush(pq, (new_f_score, new_g_score, next_pos, path + [next_pos]))
+    
+    return []  # No path found
+
+
+def visualize_adaptive_hierarchy(agent, env, title="Adaptive Hierarchy Visualization"):
+    """
+    Visualize how adaptive agents change their hierarchical structure.
+    
+    Args:
+        agent: Adaptive fractal agent
+        env: Grid environment
+        title: Plot title
+    """
+    if not hasattr(agent, 'hierarchy_history'):
+        print("Agent does not have hierarchy adaptation history")
+        return
+    
+    history = agent.hierarchy_history
+    
+    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(12, 10))
+    
+    # Extract data
+    episodes = [h['episode'] for h in history]
+    micro_sizes = [h['block_micro'] for h in history]
+    macro_sizes = [h['block_macro'] for h in history]
+    performances = [h['performance'] for h in history]
+    
+    # Plot 1: Block sizes over time
+    ax1.plot(episodes, micro_sizes, 'r-', marker='o', label='Micro Block Size')
+    ax1.plot(episodes, macro_sizes, 'b-', marker='s', label='Macro Block Size')
+    ax1.set_xlabel('Episode')
+    ax1.set_ylabel('Block Size')
+    ax1.set_title('Hierarchical Block Sizes Over Time')
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+    
+    # Plot 2: Performance correlation
+    ax2.scatter(micro_sizes, performances, alpha=0.6, label='Micro vs Performance')
+    ax2.set_xlabel('Micro Block Size')
+    ax2.set_ylabel('Episode Performance (steps)')
+    ax2.set_title('Block Size vs Performance')
+    ax2.grid(True, alpha=0.3)
+    
+    # Plot 3: Adaptation triggers
+    ax3.plot(episodes, performances, 'g-', alpha=0.7, label='Performance')
+    ax3.set_xlabel('Episode')
+    ax3.set_ylabel('Steps to Goal')
+    ax3.set_title('Performance with Adaptation Points')
+    
+    # Mark adaptation points
+    for i, h in enumerate(history):
+        if i > 0 and (h['block_micro'] != history[i-1]['block_micro'] or 
+                     h['block_macro'] != history[i-1]['block_macro']):
+            ax3.axvline(x=h['episode'], color='red', alpha=0.5, linestyle='--')
+            ax3.text(h['episode'], performances[i], 
+                    f"Δ({h['block_micro']},{h['block_macro']})", 
+                    rotation=90, fontsize=8)
+    
+    ax3.legend()
+    ax3.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    plt.show()
+
+
+def visualize_meta_learning_strategies(agent, env, title="Meta-Learning Strategy Analysis"):
+    """
+    Visualize meta-learning agent's strategy selection and performance.
+    
+    Args:
+        agent: Meta-learning agent
+        env: Grid environment
+        title: Plot title
+    """
+    if not hasattr(agent, 'strategy_history'):
+        print("Agent does not have strategy selection history")
+        return
+    
+    history = agent.strategy_history
+    
+    fig = plt.figure(figsize=(15, 10))
+    gs = gridspec.GridSpec(2, 2)
+    
+    ax1 = fig.add_subplot(gs[0, :])
+    ax2 = fig.add_subplot(gs[1, 0])
+    ax3 = fig.add_subplot(gs[1, 1])
+    
+    # Plot 1: Strategy usage over time
+    episodes = list(range(len(history)))
+    strategies = [h['strategy'] for h in history]
+    unique_strategies = list(set(strategies))
+    strategy_colors = plt.cm.tab10(np.linspace(0, 1, len(unique_strategies)))
+    
+    for i, strategy in enumerate(unique_strategies):
+        strategy_episodes = [ep for ep, s in enumerate(strategies) if s == strategy]
+        ax1.scatter(strategy_episodes, [i] * len(strategy_episodes), 
+                   color=strategy_colors[i], s=50, alpha=0.7, label=strategy)
+    
+    ax1.set_xlabel('Episode')
+    ax1.set_ylabel('Strategy')
+    ax1.set_yticks(range(len(unique_strategies)))
+    ax1.set_yticklabels(unique_strategies)
+    ax1.set_title('Strategy Selection Over Time')
+    ax1.grid(True, axis='x', alpha=0.3)
+    
+    # Plot 2: Strategy performance distribution
+    strategy_performances = {}
+    for h in history:
+        strategy = h['strategy']
+        performance = h.get('performance', 0)
+        if strategy not in strategy_performances:
+            strategy_performances[strategy] = []
+        strategy_performances[strategy].append(performance)
+    
+    box_data = [strategy_performances[s] for s in unique_strategies]
+    bp = ax2.boxplot(box_data, labels=unique_strategies, patch_artist=True)
+    
+    for patch, color in zip(bp['boxes'], strategy_colors):
+        patch.set_facecolor(color)
+    
+    ax2.set_xlabel('Strategy')
+    ax2.set_ylabel('Performance (steps)')
+    ax2.set_title('Strategy Performance Distribution')
+    ax2.grid(True, axis='y', alpha=0.3)
+    
+    # Plot 3: Environment fingerprint clustering
+    if 'env_features' in history[0]:
+        features = np.array([h['env_features'] for h in history])
+        
+        # Simple 2D projection for visualization
+        if features.shape[1] > 2:
+            # Use PCA-like projection (just first 2 features for simplicity)
+            features_2d = features[:, :2]
+        else:
+            features_2d = features
+        
+        for i, strategy in enumerate(unique_strategies):
+            strategy_mask = np.array(strategies) == strategy
+            ax3.scatter(features_2d[strategy_mask, 0], 
+                       features_2d[strategy_mask, 1],
+                       color=strategy_colors[i], label=strategy, 
+                       alpha=0.6, s=50)
+        
+        ax3.set_xlabel('Environment Feature 1')
+        ax3.set_ylabel('Environment Feature 2')
+        ax3.set_title('Strategy Selection by Environment Features')
+        ax3.legend()
+        ax3.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    plt.show()
+
+
+def visualize_multihead_attention_analysis(agent, env, episode_data, 
+                                         title="Multi-Head Attention Analysis"):
+    """
+    Detailed visualization of multi-head attention mechanisms.
+    
+    Args:
+        agent: Multi-head attention agent
+        env: Grid environment
+        episode_data: Dictionary with 'positions', 'attention_heads', 'head_weights'
+        title: Plot title
+    """
+    positions = episode_data['positions']
+    attention_heads = episode_data['attention_heads']  # Which head was active
+    head_weights = episode_data['head_weights']  # Weights for each head
+    
+    fig = plt.figure(figsize=(18, 12))
+    gs = gridspec.GridSpec(3, 3)
+    
+    # Main path visualization
+    ax_main = fig.add_subplot(gs[:2, :2])
+    ax_main.set_title(f'{title}: Agent Path with Active Attention Head')
+    
+    # Create path visualization with color coding by active head
+    head_colors = {'distance': 'blue', 'obstacles': 'red', 'progress': 'green'}
+    
+    for i in range(len(positions) - 1):
+        start = positions[i]
+        end = positions[i + 1]
+        head = attention_heads[i] if i < len(attention_heads) else 'distance'
+        color = head_colors.get(head, 'black')
+        
+        ax_main.plot([start[1], end[1]], [start[0], end[0]], 
+                    color=color, linewidth=3, alpha=0.7)
+    
+    # Add environment
+    for obs in env.obstacles:
+        ax_main.plot(obs[1], obs[0], 'ks', markersize=10)
+    ax_main.plot(env.goal[1], env.goal[0], 'g*', markersize=20)
+    ax_main.plot(env.start[1], env.start[0], 'bo', markersize=12)
+    
+    ax_main.set_xlim(-0.5, env.size - 0.5)
+    ax_main.set_ylim(-0.5, env.size - 0.5)
+    ax_main.invert_yaxis()
+    ax_main.grid(True, alpha=0.3)
+    
+    # Legend for heads
+    for head, color in head_colors.items():
+        ax_main.plot([], [], color=color, linewidth=3, label=f'{head} head')
+    ax_main.legend()
+    
+    # Head activation timeline
+    ax_timeline = fig.add_subplot(gs[2, :])
+    ax_timeline.set_title('Attention Head Activation Timeline')
+    
+    steps = list(range(len(attention_heads)))
+    head_indices = {'distance': 0, 'obstacles': 1, 'progress': 2}
+    head_values = [head_indices.get(h, 0) for h in attention_heads]
+    
+    ax_timeline.scatter(steps, head_values, c=[head_colors.get(h, 'black') 
+                                              for h in attention_heads], s=50)
+    ax_timeline.set_yticks([0, 1, 2])
+    ax_timeline.set_yticklabels(['Distance', 'Obstacles', 'Progress'])
+    ax_timeline.set_xlabel('Step')
+    ax_timeline.set_ylabel('Active Head')
+    ax_timeline.grid(True, alpha=0.3)
+    
+    # Head weight evolution
+    ax_weights = fig.add_subplot(gs[:2, 2])
+    ax_weights.set_title('Head Weight Evolution')
+    
+    if head_weights:
+        weights_array = np.array(head_weights)
+        ax_weights.plot(weights_array[:, 0], 'b-', label='Distance')
+        ax_weights.plot(weights_array[:, 1], 'r-', label='Obstacles')
+        ax_weights.plot(weights_array[:, 2], 'g-', label='Progress')
+        ax_weights.set_xlabel('Step')
+        ax_weights.set_ylabel('Weight')
+        ax_weights.legend()
+        ax_weights.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    plt.show() 
